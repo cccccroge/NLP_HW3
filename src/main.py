@@ -10,7 +10,7 @@ import gensim.models.keyedvectors as word2vec
 
 """ Define variables """
 batch_size = 64  # Batch size for training.
-epochs = 100  # Number of epochs to train for.
+epochs = 10  # Number of epochs to train for.
 latent_dim = 256  # Latent dimensionality of the encoding space.
 num_samples = 128  # Number of samples to train on.
 
@@ -81,20 +81,24 @@ print('Max sequence length for inputs:', MAX_SEQ_LEN)
 
 """ Prepare model data """
 def get_model_data(input_seqs, correct_seqs):
-    encoder_input_data = input_seqs.astype('float32')
-    decoder_input_data = correct_seqs.astype('float32')
+    encoder_input_data = np.zeros(
+        (len(input_seqs), MAX_SEQ_LEN),
+        dtype='float32')
+    decoder_input_data = np.zeros(
+        (len(input_seqs), MAX_SEQ_LEN),
+        dtype='float32')
     decoder_target_data = np.zeros(
-        (len(input_seqs), MAX_SEQ_LEN, VOCAB_SIZE),
+        (len(input_seqs), MAX_SEQ_LEN, 1),
         dtype='float32')
 
     for i, (input_seq, correct_seq) in enumerate(zip(input_seqs, correct_seqs)):
-        # for t, word_idx in enumerate(input_seq):
-        #     encoder_input_data[i, t] = word_idx
+        for t, word_idx in enumerate(input_seq):
+            encoder_input_data[i, t] = word_idx
 
         for t, word_idx in enumerate(correct_seq):
-            # decoder_input_data[i, t] = word_idx
+            decoder_input_data[i, t] = word_idx
             if t > 0:
-                decoder_target_data[i, t - 1, word_idx] = 1.
+                decoder_target_data[i, t - 1, 0] = word_idx
 
     return (encoder_input_data, decoder_input_data, decoder_target_data)
 
@@ -124,7 +128,7 @@ decoder_inputs = decoder_embedding_outputs
 decoder = LSTM(latent_dim, return_sequences=True, return_state=True)
 decoder_outputs, _, _ = decoder(decoder_inputs)
 
-decoder_dense_layer = Dense(VOCAB_SIZE, activation='softmax')
+decoder_dense_layer = Dense(1, activation='softmax')
 decoder_dense_outputs = decoder_dense_layer(decoder_outputs)
 
 # train & save
@@ -169,8 +173,8 @@ def decode_sequence(input_seq):
         output_tokens, h, c = decoder_model.predict(
             [target_seq] + states_val)
 
-        sampled_token_index = np.argmax(output_tokens[0, -1, :])
-        sampled_word = index_word[sampled_token_index + 1]
+        sampled_token_index = int(output_tokens[0, -1, 0])
+        sampled_word = index_word[sampled_token_index]
         output_text += (sampled_word + ' ')
         gen_len += 1
 
