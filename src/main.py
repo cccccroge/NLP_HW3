@@ -1,78 +1,132 @@
 from __future__ import print_function
 
 from keras.models import Model
-from keras.layers import Input, LSTM, Dense
+from keras.layers import Input, LSTM, Dense, Embedding
+from keras.preprocessing.text import Tokenizer
+from keras.preprocessing.sequence import pad_sequences
 import numpy as np
+from gensim.models import Word2Vec
 
+
+""" Define variables """
 batch_size = 64  # Batch size for training.
 epochs = 100  # Number of epochs to train for.
 latent_dim = 256  # Latent dimensionality of the encoding space.
 num_samples = 10000  # Number of samples to train on.
+
+MAX_SEQ_LEN = 50
+VOCAB_SIZE = 0  # obtain after tokenizer is fit
+WORD_VEC_DIM = 0 # obtain after w2v model is loaded
+
 # Path to the data txt file on disk.
-data_path = 'fra-eng/fra.txt'
+train_data_path = 'train.txt'
+val_data_path = 'validation.txt'
+word2vec_path = '../model/GoogleNews-vectors-negative300.bin'
 
-# Vectorize the data.
-input_texts = []
-target_texts = []
-input_characters = set()
-target_characters = set()
-with open(data_path, 'r', encoding='utf-8') as f:
-    lines = f.read().split('\n')
-for line in lines[: min(num_samples, len(lines))]:  # WHY: len-1?
-    input_text, target_text = line.split('\t')
-    # We use "tab" as the "start sequence" character
-    # for the targets, and "\n" as "end sequence" character.
-    target_text = '\t' + target_text + '\n'
-    input_texts.append(input_text)
-    target_texts.append(target_text)
-    for char in input_text:
-        if char not in input_characters:
-            input_characters.add(char)
-    for char in target_text:
-        if char not in target_characters:
-            target_characters.add(char)
 
-input_characters = sorted(list(input_characters))
-target_characters = sorted(list(target_characters))
-num_encoder_tokens = len(input_characters)
-num_decoder_tokens = len(target_characters)
-max_encoder_seq_length = max([len(txt) for txt in input_texts])
-max_decoder_seq_length = max([len(txt) for txt in target_texts])
+""" Process files """
+def get_inputs_corrects(data_path, num_samples):
+    input_texts = []
+    correct_texts = []
 
-print('Number of samples:', len(input_texts))
-print('Number of unique input tokens:', num_encoder_tokens)
-print('Number of unique output tokens:', num_decoder_tokens)
-print('Max sequence length for inputs:', max_encoder_seq_length)
-print('Max sequence length for outputs:', max_decoder_seq_length)
+    with open(data_path, 'r', encoding='utf-8') as f:
+        lines = f.read().split('\n')
 
-input_token_index = dict(
-    [(char, i) for i, char in enumerate(input_characters)])
-target_token_index = dict(
-    [(char, i) for i, char in enumerate(target_characters)])
+    for line in lines[: min(num_samples, len(lines))]:  # need to -1?
+        texts = line.split('\t')
+        input_text = texts[0]
+        correct_text = texts[1]
+        correct_text = '\t ' + correct_text + ' \n'   # tab as <Start>, next line as <End>
+        input_texts.append(input_text)
+        correct_texts.append(correct_text)
 
+train_input_texts, train_correct_texts = get_inputs_corrects(train_data_path, num_samples)
+val_input_texts, val_correct_texts = get_inputs_corrects(val_data_path, num_samples / 4)
+
+
+""" Process texts """
+t = Tokenizer(filters='', split=' ')
+t.fit_on_texts(train_input_texts + train_correct_texts + val_input_texts + val_correct_texts)
+VOCAB_SIZE = t.num_words + 1    # plus 0 for unknown words
+index_word = t.index_word
+
+train_input_sequences = t.texts_to_sequences(train_input_texts)
+train_correct_sequences = t.texts_to_sequences(train_correct_texts)
+val_input_sequences = t.texts_to_sequences(val_input_texts)
+val_correct_sequences = t.texts_to_sequences(val_correct_texts)
+
+train_input_sequences_pad = pad_sequences(train_input_sequences, maxlen=MAX_SEQ_LEN, padding='post')
+train_correct_sequences_pad = pad_sequences(train_correct_sequences, maxlen=MAX_SEQ_LEN, padding='post')
+val_input_sequences_pad = pad_sequences(val_input_sequences, maxlen=MAX_SEQ_LEN, padding='post')
+val_correct_sequences_pad = pad_sequences(val_correct_sequences, maxlen=MAX_SEQ_LEN, padding='post')
+
+
+""" Load Word2Vec model, create embedding matrix """
+w2v_model = Word2Vec.load(word2vec_path)
+WORD_VEC_DIM = w2v_model.vector_size
+embedding_matrix = np.zeros((VOCAB_SIZE, WORD_VEC_DIM))
+for word, index in t.word_index.items():
+    vec = w2v_model.wv[word]
+    if vec is not None:
+        embedding_matrix[index] = vec
+
+print('Number of samples:', len(train_input_texts))
+print('Number of train samples:', num_samples)
+print('Number of vocab:', VOCAB_SIZE - 1)
+print('Max sequence length for inputs:', MAX_SEQ_LEN)
+
+
+""" Prepare model data """
 encoder_input_data = np.zeros(
-    (len(input_texts), max_encoder_seq_length, num_encoder_tokens),
+    (len(train_input_sequences_pad), MAX_SEQ_LEN),
     dtype='float32')
 decoder_input_data = np.zeros(
-    (len(input_texts), max_decoder_seq_length, num_decoder_tokens),
+    (len(train_input_sequences_pad), MAX_SEQ_LEN),
     dtype='float32')
 decoder_target_data = np.zeros(
-    (len(input_texts), max_decoder_seq_length, num_decoder_tokens),
+    (len(train_input_sequences_pad), MAX_SEQ_LEN, VOCAB_SIZE),
     dtype='float32')
 
-for i, (input_text, target_text) in enumerate(zip(input_texts, target_texts)):
-    for t, char in enumerate(input_text):
-        encoder_input_data[i, t, input_token_index[char]] = 1.
-    encoder_input_data[i, t + 1:, input_token_index[' ']] = 1.  # WHY: append ' '? (also another two?)
-    for t, char in enumerate(target_text):
-        # decoder_target_data is ahead of decoder_input_data by one timestep
-        decoder_input_data[i, t, target_token_index[char]] = 1.
+for i, (input_seq, correct_seq) in enumerate(zip(train_input_sequences_pad, train_correct_sequences_pad)):
+    for t, word_idx in enumerate(input_seq):
+        encoder_input_data[i, t] = word_idx
+
+    for t, word_idx in enumerate(correct_seq):
+        encoder_input_data[i, t] = word_idx
         if t > 0:
-            # decoder_target_data will be ahead by one timestep
-            # and will not include the start character.
-            decoder_target_data[i, t - 1, target_token_index[char]] = 1.
-    decoder_input_data[i, t + 1:, target_token_index[' ']] = 1.
-    decoder_target_data[i, t:, target_token_index[' ']] = 1.
+            decoder_target_data[i, t - 1, word_idx] = 1.
+
+
+""" Create training model """
+# encoder part
+encoder_embedding_inputs = Input(shape=(None, MAX_SEQ_LEN))
+encoder_embedding_layer = Embedding(VOCAB_SIZE, WORD_VEC_DIM, weights=[embedding_matrix], trainable=False)
+encoder_embedding_outputs = encoder_embedding_layer(encoder_embedding_inputs)
+
+encoder_inputs = encoder_embedding_outputs
+encoder = LSTM(latent_dim, return_sequences=False, return_state=True)
+encoder_output, state_h, state_c = encoder(encoder_inputs)
+encoder_states = [state_h, state_c]
+
+# decoder part
+decoder_embedding_inputs = Input(shape=(None, MAX_SEQ_LEN))
+decoder_embedding_layer = Embedding(VOCAB_SIZE, WORD_VEC_DIM, weights=[embedding_matrix], trainable=False)
+decoder_embedding_outputs = decoder_embedding_layer(decoder_embedding_inputs)
+
+decoder_inputs = decoder_embedding_outputs
+decoder = LSTM(latent_dim, return_sequences=True, return_state=True)
+decoder_outputs, _, _ = decoder(decoder_inputs)
+
+decoder_dense_layer = Dense(VOCAB_SIZE, activation='softmax')
+decoder_dense_outputs = decoder_dense_layer(decoder_outputs)
+
+# train & save
+train_model = Model([encoder_embedding_inputs, decoder_embedding_inputs], decoder_dense_outputs)
+train_model.compile(optimizer='rmsprop', loss='sparse_categorical_crossentropy',
+              metrics=['accuracy'])
+train_model.fit()
+
+
 # Define an input sequence and process it.
 encoder_inputs = Input(shape=(None, num_encoder_tokens))
 encoder = LSTM(latent_dim, return_state=True)
@@ -103,7 +157,7 @@ model.fit([encoder_input_data, decoder_input_data], decoder_target_data,
           epochs=epochs,
           validation_split=0.2)
 # Save model
-model.save('s2s.h5')
+model.save('../model/s2s.h5')
 
 # Next: inference mode (sampling).
 # Here's the drill:
