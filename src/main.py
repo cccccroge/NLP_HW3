@@ -86,7 +86,7 @@ decoder_inputs = Input(shape=(None, num_decoder_tokens))
 # and to return internal states as well. We don't use the
 # return states in the training model, but we will use them in inference.
 decoder_lstm = LSTM(latent_dim, return_sequences=True, return_state=True)
-decoder_outputs, _, _ = decoder_lstm(decoder_inputs,
+decoder_outputs, _, _ = decoder_lstm(decoder_inputs,    # WHY: how to use _ as tuple elements
                                      initial_state=encoder_states)
 decoder_dense = Dense(num_decoder_tokens, activation='softmax')
 decoder_outputs = decoder_dense(decoder_outputs)
