@@ -10,9 +10,9 @@ import gensim.models.keyedvectors as word2vec
 
 """ Define variables """
 batch_size = 64  # Batch size for training.
-epochs = 10  # Number of epochs to train for.
+epochs = 100  # Number of epochs to train for.
 latent_dim = 256  # Latent dimensionality of the encoding space.
-num_samples = 128  # Number of samples to train on.
+num_samples = 2000  # Number of samples to train on.
 
 MAX_SEQ_LEN = 50
 VOCAB_SIZE = 0  # obtain after tokenizer is fit
@@ -128,12 +128,12 @@ decoder_inputs = decoder_embedding_outputs
 decoder = LSTM(latent_dim, return_sequences=True, return_state=True)
 decoder_outputs, _, _ = decoder(decoder_inputs)
 
-decoder_dense_layer = Dense(1, activation='softmax')
+decoder_dense_layer = Dense(VOCAB_SIZE, activation='relu')
 decoder_dense_outputs = decoder_dense_layer(decoder_outputs)
 
 # train & save
 train_model = Model([encoder_embedding_inputs, decoder_embedding_inputs], decoder_dense_outputs)
-train_model.compile(optimizer='rmsprop', loss='categorical_crossentropy',
+train_model.compile(optimizer='rmsprop', loss='sparse_categorical_crossentropy',
               metrics=['accuracy'])
 train_model.summary()         
 train_model.fit([train_encoder_input_data, train_decoder_input_data], train_decoder_target_data,
@@ -173,8 +173,11 @@ def decode_sequence(input_seq):
         output_tokens, h, c = decoder_model.predict(
             [target_seq] + states_val)
 
-        sampled_token_index = int(output_tokens[0, -1, 0])
-        sampled_word = index_word[sampled_token_index]
+        sampled_token_index = np.argmax(output_tokens[0, -1, :])
+        if sampled_token_index == 0:
+            sampled_word = '<empty>'
+        else:
+            sampled_word = index_word[sampled_token_index]
         output_text += (sampled_word + ' ')
         gen_len += 1
 
